@@ -1,10 +1,11 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>frontend</title>
+    <title>Item Manager</title>
+    <!-- Vite automatically processes and injects your CSS assets here -->
   </head>
   <body>
     <div id="app">
@@ -16,7 +17,8 @@
             <input type="text" id="item-title" placeholder="Item Title" required />
             <input type="text" id="item-desc" placeholder="Item Description (Optional)" />
             <button type="submit" id="submit-btn">Add Item</button>
-            <button type="button" id="cancel-btn" style="display: none;">Cancel</button>
+            <!-- Fixed: Replaced inline styles with modern, semantic "hidden" attribute -->
+            <button type="button" id="cancel-btn" hidden>Cancel</button>
         </form>
 
         <!-- Container to display list items -->

@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-app
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: frontend
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      securityContext:
+        # Prevent root execution across the entire pod structure
+        runAsNonRoot: true
+        runAsUser: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: web-server
+          image: moreskylab/frontend:1.0.0  # Swap with your target build tag
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            # Change this value to switch ports dynamically on container initialization
+            - name: PORT
+              value: "8080"
+            # Target endpoint where your production FastAPI backend is listening
+            - name: VITE_API_URL
+              value: "https://demo.altgr.in"
+          resources:
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+          securityContext:
+            # Fully lock down the runtime root file storage system
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 2
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            timeoutSeconds: 2
+          volumeMounts:
+            # Mount ephemeral storage for pid/cache writes required by unprivileged NGINX
+            - name: tmp-volume
+              mountPath: /tmp
+            # Mount the single ConfigMap configuration template directly over target asset path
+            - name: config-volume
+              mountPath: /etc/nginx/templates/default.conf.template
+              subPath: default.conf.template
+      volumes:
+        - name: tmp-volume
+          emptyDir: {}
+        - name: config-volume
+          configMap:
+            name: frontend-nginx-config
+            items:
+              - key: default.conf.template
+                path: default.conf.template
