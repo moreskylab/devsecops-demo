@@ -7,7 +7,22 @@
     <title>frontend</title>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+        <h1>Item Manager</h1>
+        
+        <!-- Form for Creating / Updating Items -->
+        <form id="item-form">
+            <input type="hidden" id="item-id">
+            <input type="text" id="item-title" placeholder="Item Title" required />
+            <input type="text" id="item-desc" placeholder="Item Description (Optional)" />
+            <button type="submit" id="submit-btn">Add Item</button>
+            <button type="button" id="cancel-btn" style="display: none;">Cancel</button>
+        </form>
+
+        <!-- Container to display list items -->
+        <h2>All Items</h2>
+        <ul id="items-list"></ul>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

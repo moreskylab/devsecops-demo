@@ -1,60 +1,128 @@
-import './style.css'
-import typescriptLogo from './assets/typescript.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import { setupCounter } from './counter.ts'
+import './style.css';
 
-document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
-<section id="center">
-  <div class="hero">
-    <img src="${heroImg}" class="base" width="170" height="179">
-    <img src="${typescriptLogo}" class="framework" alt="TypeScript logo"/>
-    <img src="${viteLogo}" class="vite" alt="Vite logo" />
-  </div>
-  <div>
-    <h1>Get started</h1>
-    <p>Edit <code>src/main.ts</code> and save to test <code>HMR</code></p>
-  </div>
-  <button id="counter" type="button" class="counter"></button>
-</section>
+// 1. Data Type Contract Definitions
+interface Item {
+    id: number;
+    title: string;
+    description: string | null;
+}
 
-<div class="ticks"></div>
+const API_URL = import.meta.env.API_URL || 'http://localhost:8000/items';
 
-<section id="next-steps">
-  <div id="docs">
-    <svg class="icon" role="presentation" aria-hidden="true"><use href="/icons.svg#documentation-icon"></use></svg>
-    <h2>Documentation</h2>
-    <p>Your questions, answered</p>
-    <ul>
-      <li>
-        <a href="https://vite.dev/" target="_blank">
-          <img class="logo" src="${viteLogo}" alt="" />
-          Explore Vite
-        </a>
-      </li>
-      <li>
-        <a href="https://www.typescriptlang.org" target="_blank">
-          <img class="button-icon" src="${typescriptLogo}" alt="">
-          Learn more
-        </a>
-      </li>
-    </ul>
-  </div>
-  <div id="social">
-    <svg class="icon" role="presentation" aria-hidden="true"><use href="/icons.svg#social-icon"></use></svg>
-    <h2>Connect with us</h2>
-    <p>Join the Vite community</p>
-    <ul>
-      <li><a href="https://github.com/vitejs/vite" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#github-icon"></use></svg>GitHub</a></li>
-      <li><a href="https://chat.vite.dev/" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#discord-icon"></use></svg>Discord</a></li>
-      <li><a href="https://x.com/vite_js" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#x-icon"></use></svg>X.com</a></li>
-      <li><a href="https://bsky.app/profile/vite.dev" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#bluesky-icon"></use></svg>Bluesky</a></li>
-    </ul>
-  </div>
-</section>
+// 2. DOM Elements Selection
+const itemForm = document.getElementById('item-form') as HTMLFormElement;
+const itemIdInput = document.getElementById('item-id') as HTMLInputElement;
+const itemTitleInput = document.getElementById('item-title') as HTMLInputElement;
+const itemDescInput = document.getElementById('item-desc') as HTMLInputElement;
+const submitBtn = document.getElementById('submit-btn') as HTMLButtonElement;
+const cancelBtn = document.getElementById('cancel-btn') as HTMLButtonElement;
+const itemsList = document.getElementById('items-list') as HTMLUListElement;
 
-<div class="ticks"></div>
-<section id="spacer"></section>
-`
+let isEditing = false;
 
-setupCounter(document.querySelector<HTMLButtonElement>('#counter')!)
+// 3. API Actions
+async function fetchItems(): Promise<void> {
+    try {
+        const response = await fetch(API_URL);
+        const items: Item[] = await response.json();
+        renderItems(items);
+    } catch (err) {
+        console.error("Failed fetching records:", err);
+    }
+}
+
+async function saveItem(e: Event): Promise<void> {
+    e.preventDefault();
+    
+    const id = itemIdInput.value;
+    const payload = {
+        title: itemTitleInput.value,
+        description: itemDescInput.value || null
+    };
+
+    try {
+        if (isEditing && id) {
+            // Update operation
+            await fetch(`${API_URL}/${id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+        } else {
+            // Create operation
+            await fetch(API_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+        }
+        resetForm();
+        await fetchItems();
+    } catch (err) {
+        console.error("Failed saving payload:", err);
+    }
+}
+
+async function deleteItem(id: number): Promise<void> {
+    if (!confirm("Delete this item?")) return;
+    try {
+        await fetch(`${API_URL}/${id}`, { method: 'DELETE' });
+        await fetchItems();
+    } catch (err) {
+        console.error("Failed dropping record:", err);
+    }
+}
+
+// 4. UI Rendering Engine
+function renderItems(items: Item[]): void {
+    itemsList.innerHTML = '';
+    items.forEach(item => {
+        const li = document.createElement('li');
+        
+        const contentDiv = document.createElement('div');
+        contentDiv.innerHTML = `<strong>${item.title}</strong> ${item.description ? `- ${item.description}` : ''}`;
+        
+        const actionsDiv = document.createElement('div');
+        actionsDiv.className = 'actions';
+
+        const editBtn = document.createElement('button');
+        editBtn.textContent = 'Edit';
+        editBtn.addEventListener('click', () => startEdit(item));
+
+        const delBtn = document.createElement('button');
+        delBtn.textContent = 'Delete';
+        delBtn.className = 'delete-btn';
+        delBtn.addEventListener('click', () => deleteItem(item.id));
+
+        actionsDiv.appendChild(editBtn);
+        actionsDiv.appendChild(delBtn);
+        
+        li.appendChild(contentDiv);
+        li.appendChild(actionsDiv);
+        itemsList.appendChild(li);
+    });
+}
+
+function startEdit(item: Item): void {
+    isEditing = true;
+    itemIdInput.value = item.id.toString();
+    itemTitleInput.value = item.title;
+    itemDescInput.value = item.description || '';
+    submitBtn.textContent = 'Update Item';
+    cancelBtn.style.display = 'inline-block';
+}
+
+function resetForm(): void {
+    isEditing = false;
+    itemForm.reset();
+    itemIdInput.value = '';
+    submitBtn.textContent = 'Add Item';
+    cancelBtn.style.display = 'none';
+}
+
+// 5. Event Binding Listeners
+itemForm.addEventListener('submit', saveItem);
+cancelBtn.addEventListener('click', resetForm);
+
+// Initial Load Hook
+document.addEventListener('DOMContentLoaded', fetchItems);
