@@ -1,0 +1,36 @@
+// 1. Ingestion: Listen on gRPC (4317) for Backend and HTTP (4318) for Frontend Browser
+otelcol.receiver.otlp "default" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+  output {
+    metrics = [otelcol.processor.batch.processing.input]
+    logs    = [otelcol.processor.batch.processing.input]
+    traces  = [otelcol.processor.batch.processing.input]
+  }
+}
+
+// 2. Processing: Batch metrics, logs, and traces for performance efficiency
+otelcol.processor.batch "processing" {
+  output {
+    metrics = [otelcol.exporter.otlp.mimir.input]
+    logs    = [otelcol.exporter.otlp.loki.input]
+    traces  = [otelcol.exporter.otlp.tempo.input]
+  }
+}
+
+// 3. Exporters: Forward processed telemetry directly to individual database backends
+otelcol.exporter.otlp "mimir" { 
+  client { endpoint = "localhost:9009" } 
+}
+
+otelcol.exporter.otlp "loki" { 
+  client { endpoint = "localhost:3100" } 
+}
+
+otelcol.exporter.otlp "tempo" { 
+  client { endpoint = "localhost:4317" } 
+}

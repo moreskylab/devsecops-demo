@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-env-config
+data:
+  DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/postgres"
+  WEB_CONCURRENCY: "4"
+  PORT: "8000"
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fastapi-postgres-pod
+spec:
+  containers:
+  # 1. The PostgreSQL Database Container Configuration
+  - name: db
+    image: docker.io/library/postgres:alpine
+    env:
+    - name: POSTGRES_USER
+      value: postgres
+    - name: POSTGRES_PASSWORD
+      value: postgres
+    - name: POSTGRES_DB
+      value: postgres
+    ports:
+    - containerPort: 5432  # Opens port 5432 inside the Pod
+
+  # 2. The FastAPI Backend Application Container Configuration
+  - name: web
+    image: localhost/backend:1.0.0
+    envFrom:
+    - configMapRef:
+        name: app-env-config
+    ports:
+    - containerPort: 8000  # Opens port 8000 inside the Pod

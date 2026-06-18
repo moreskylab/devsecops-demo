@@ -4,6 +4,7 @@ metadata:
   name: frontend-app
   namespace: default
   labels:
+    app.kubernetes.io/name: frontend
     app.kubernetes.io/part-of: frontend
 spec:
   replicas: 2
@@ -19,28 +20,59 @@ spec:
     metadata:
       labels:
         app: frontend
+      annotations:
+        sidecar.istio.io/inject: "true"
     spec:
       securityContext:
-        # Prevent root execution across the entire pod structure
         runAsNonRoot: true
         runAsUser: 101
         fsGroup: 101
         seccompProfile:
           type: RuntimeDefault
+
+      # ======================================================================
+      # INIT CONTAINER: Swaps out placeholders before NGINX boots
+      # ======================================================================
+      initContainers:
+        - name: inject-env
+          image: moreskylab/frontend:1.0.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: VITE_API_URL
+              value: "https://demo.altgr.in"
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Copying original immutable assets from image filesystem..."
+              cp -R /usr/share/nginx/html/* /var/www/html/
+              
+              echo "Injecting runtime API URL into compiled JavaScript chunks..."
+              find /var/www/html -type f -name "*.js" -exec sed -i "s|__RUNTIME_VITE_API_URL__|${VITE_API_URL}|g" {} +
+              
+              echo "Asset processing completed successfully."
+          securityContext:
+            readOnlyRootFilesystem: true # HARDENED: Locked down initialization file system
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: asset-volume
+              mountPath: /var/www/html
+
+      # ======================================================================
+      # MAIN APP CONTAINER: Runs NGINX with read-only assets
+      # ======================================================================
       containers:
-        - name: web-server
-          image: moreskylab/frontend:1.0.0  # Swap with your target build tag
+        - name: frontend
+          image: moreskylab/frontend:1.0.0
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
               name: http
           env:
-            # Change this value to switch ports dynamically on container initialization
             - name: PORT
               value: "8080"
-            # Target endpoint where your production FastAPI backend is listening
-            - name: VITE_API_URL
-              value: "https://demo.altgr.in"
           resources:
             limits:
               cpu: "500m"
@@ -49,7 +81,6 @@ spec:
               cpu: "100m"
               memory: "128Mi"
           securityContext:
-            # Fully lock down the runtime root file storage system
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
             capabilities:
@@ -70,15 +101,29 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 2
           volumeMounts:
-            # Mount ephemeral storage for pid/cache writes required by unprivileged NGINX
             - name: tmp-volume
               mountPath: /tmp
-            # Mount the single ConfigMap configuration template directly over target asset path
+            - name: var-run-volume
+              mountPath: /var/run
+            - name: var-cache-volume
+              mountPath: /var/cache/nginx
+            - name: nginx-conf-dir
+              mountPath: /etc/nginx/conf.d
             - name: config-volume
               mountPath: /etc/nginx/templates/default.conf.template
               subPath: default.conf.template
+            - name: asset-volume
+              mountPath: /usr/share/nginx/html
+              readOnly: true
+
       volumes:
         - name: tmp-volume
+          emptyDir: {}
+        - name: var-run-volume
+          emptyDir: {}
+        - name: var-cache-volume
+          emptyDir: {}
+        - name: nginx-conf-dir
           emptyDir: {}
         - name: config-volume
           configMap:
@@ -86,3 +131,5 @@ spec:
             items:
               - key: default.conf.template
                 path: default.conf.template
+        - name: asset-volume
+          emptyDir: {}

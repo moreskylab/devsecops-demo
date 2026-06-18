@@ -1,0 +1,63 @@
+// ==========================================
+// 1. INGESTION (Receivers)
+// ==========================================
+
+// Accept Traces, Metrics, and Logs via gRPC/HTTP OpenTelemetry
+otelcol.receiver.otlp "default" {
+  grpc { endpoint = "0.0.0.0:4317" }
+  http { endpoint = "0.0.0.0:4318" }
+
+  output {
+    metrics = [otelcol.exporter.prometheus.to_mimir.input]
+    traces  = [otelcol.exporter.otlp.to_tempo.input]
+    logs    = [otelcol.exporter.otlp.to_loki.input]
+  }
+}
+
+// Accept Pyroscope Profiles via Native HTTP Push
+pyroscope.receive_http "default" {
+  http {
+    listen_address = "0.0.0.0"
+    listen_port    = 4040
+  }
+  // FIX: Swapped out .input with .receiver
+  forward_to = [pyroscope.write.to_pyroscope.receiver]
+}
+
+// ==========================================
+// 2. EXPORTERS & FORWARDING
+// ==========================================
+
+// --- Metrics Pipeline ---
+otelcol.exporter.prometheus "to_mimir" {
+  forward_to = [prometheus.remote_write.mimir.receiver]
+}
+
+prometheus.remote_write "mimir" {
+  endpoint { 
+    url = "http://lgtm:9090/api/v1/push" 
+  }
+}
+
+// --- Traces Pipeline ---
+otelcol.exporter.otlp "to_tempo" {
+  client {
+    endpoint = "lgtm:4317"
+    tls { insecure = true }
+  }
+}
+
+// --- Logs Pipeline ---
+otelcol.exporter.otlp "to_loki" {
+  client {
+    endpoint = "lgtm:4317"
+    tls { insecure = true }
+  }
+}
+
+// --- Profiles Pipeline ---
+pyroscope.write "to_pyroscope" {
+  endpoint { 
+    url = "http://pyroscope:4040" 
+  }
+}

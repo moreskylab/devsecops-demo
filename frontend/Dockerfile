@@ -1,22 +1,20 @@
 # ==========================================
 # Stage 1: Build the Vanilla TypeScript App
 # ==========================================
-FROM node:22-alpine AS builder
+FROM node:24-alpine AS builder
 
 WORKDIR /app
 
 # Combine dependency installation, source copying, and building into a single layer
 COPY package*.json ./
 COPY . .
-RUN npm ci && npm run build 
+RUN npm install && npm run build 
 
 # ==========================================
 # Stage 2: Serve using Unprivileged NGINX
 # ==========================================
 FROM nginxinc/nginx-unprivileged:1.27-alpine
 
-# Clear default assets and configurations safely in one layer
-RUN rm -f /usr/share/nginx/html/* /etc/nginx/conf.d/default.conf
 
 # Copy build artifacts from Stage 1 with secure read-only permissions
 COPY --from=builder --chown=nginx:nginx --chmod=0555 /app/dist /usr/share/nginx/html

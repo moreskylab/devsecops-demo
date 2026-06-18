@@ -1,0 +1,117 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-rw-service
+  namespace: default
+  labels:
+    app: postgres
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+  - name: postgres
+    port: 5432
+    targetPort: 5432
+  selector:
+    app: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: default
+  labels:
+    app: postgres
+spec:
+  serviceName: "postgres-rw-service"
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: init-db-script
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Injecting schema provisioning automation script..."
+              cat << 'EOF' > /lifecycle/init-db.sh
+              #!/bin/sh
+              set -e
+              psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+                  CREATE USER app_db_user WITH PASSWORD 'VaultShieldPassWord99';
+                  CREATE DATABASE production_items;
+                  GRANT ALL PRIVILEGES ON DATABASE production_items TO app_db_user;
+                  \c production_items
+                  GRANT ALL ON SCHEMA public TO app_db_user;
+              EOSQL
+              echo "Database initialization completed."
+              EOF
+              chmod +x /lifecycle/init-db.sh
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: lifecycle-scripts
+              mountPath: /lifecycle
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POSTGRES_USER
+              value: "postgres"
+            - name: POSTGRES_PASSWORD
+              value: "SuperSecureAdminPassword123"
+            - name: POSTGRES_DB
+              value: "postgres"
+          ports:
+            - containerPort: 5432
+              name: postgres
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+            - name: lifecycle-scripts
+              mountPath: /docker-entrypoint-initdb.d
+            # CRITICAL ADAPTATIONS FOR READ-ONLY FILESYSTEMS:
+            - name: tmp-volume
+              mountPath: /tmp
+            - name: pg-run-volume
+              mountPath: /var/run/postgresql
+      volumes:
+        - name: lifecycle-scripts
+          emptyDir: {}
+        - name: tmp-volume
+          emptyDir: {}
+        - name: pg-run-volume
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: 10Gi

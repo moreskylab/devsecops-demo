@@ -1,0 +1,142 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloud-native-env-config
+data:
+  PORT: "8000"
+  WEB_CONCURRENCY: "4"
+  ALLOWED_ORIGIN: "http://localhost:8080" 
+  DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/postgres"
+  ENABLE_OBSERVABILITY: "true"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://localhost:4317"
+  PYROSCOPE_SERVER: "http://localhost:4040"
+
+---
+# NEW: Bypasses Windows file paths by embedding the config directly into the cluster
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy-config-file
+data:
+  config.alloy: |
+    otelcol.receiver.otlp "default" {
+      grpc { endpoint = "0.0.0.0:4317" }
+      http { endpoint = "0.0.0.0:4318" }
+      output {
+        metrics = [otelcol.processor.batch.processing.input]
+        logs    = [otelcol.processor.batch.processing.input]
+        traces  = [otelcol.processor.batch.processing.input]
+      }
+    }
+    otelcol.processor.batch "processing" {
+      output {
+        metrics = [otelcol.exporter.otlp.mimir.input]
+        logs    = [otelcol.exporter.otlp.loki.input]
+        traces  = [otelcol.exporter.otlp.tempo.input]
+      }
+    }
+    otelcol.exporter.otlp "mimir" { client { endpoint = "localhost:9009" } }
+    otelcol.exporter.otlp "loki"  { client { endpoint = "localhost:3100" } }
+    otelcol.exporter.otlp "tempo" { client { endpoint = "localhost:4317" } }
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: local-observability-stack-pod
+spec:
+  containers:
+  # =========================================================================
+  # 1. ROUTING LAYER: Unprivileged NGINX Ingress Proxy
+  # =========================================================================
+  - name: gateway-proxy
+    image: localhost/frontend:1.0.0
+    ports:
+    - containerPort: 8080
+
+  # =========================================================================
+  # 2. BACKEND LAYER: Python FastAPI Application Server
+  # =========================================================================
+  - name: backend-web
+    image: localhost/backend:1.0.0
+    ports:
+    - containerPort: 8000
+    envFrom:
+    - configMapRef:
+        name: cloud-native-env-config
+    livenessProbe:
+      httpGet:
+        path: /healthz
+        port: 8000
+      initialDelaySeconds: 5
+      periodSeconds: 10
+    readinessProbe:
+      httpGet:
+        path: /readyz
+        port: 8000
+      initialDelaySeconds: 5
+      periodSeconds: 10
+
+  # =========================================================================
+  # 3. DATABASE LAYER: PostgreSQL Storage Engine
+  # =========================================================================
+  - name: postgres-db
+    image: docker.io/library/postgres:alpine
+    env:
+    - name: POSTGRES_USER
+      value: postgres
+    - name: POSTGRES_PASSWORD
+      value: postgres
+    - name: POSTGRES_DB
+      value: postgres
+    ports:
+    - containerPort: 5432
+
+  # =========================================================================
+  # 4. TELEMETRY ROUTER: Grafana Alloy Collector
+  # =========================================================================
+  - name: grafana-alloy
+    image: docker.io/grafana/alloy:latest
+    args: ["run", "/etc/alloy/config.alloy", "--storage.path=/tmp/alloy-data"]
+    ports:
+    - containerPort: 4317
+    - containerPort: 4318
+    volumeMounts:
+    - name: alloy-config-mount
+      mountPath: /etc/alloy # Mounts config map seamlessly as a file
+
+  # =========================================================================
+  # 5. OBSERVABILITY DATASTORES (LGTM Stack)
+  # =========================================================================
+  - name: grafana-dashboard
+    image: docker.io/grafana/grafana:latest
+    ports:
+    - containerPort: 3000
+
+  - name: loki-logs-db
+    image: docker.io/grafana/loki:latest
+    ports:
+    - containerPort: 3100
+
+  - name: tempo-traces-db
+    image: docker.io/grafana/tempo:latest
+    ports:
+    - containerPort: 3200
+
+  - name: mimir-metrics-db
+    image: docker.io/grafana/mimir:latest
+    ports:
+    - containerPort: 9009
+
+  - name: pyroscope-profiler-db
+    image: docker.io/grafana/pyroscope:latest
+    ports:
+    - containerPort: 4040
+
+  # =========================================================================
+  # SHARED VOLUMES PIPELINE DEFINITIONS
+  # =========================================================================
+  volumes:
+  - name: alloy-config-mount
+    configMap:
+      name: alloy-config-file # Maps the configuration dataset block without local disk file paths

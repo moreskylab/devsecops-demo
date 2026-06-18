@@ -1,0 +1,50 @@
+cat > .containerignore << 'EOF'
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# IDE and editor files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Documentation
+*.md
+LICENSE
+docs/
+
+# Dependencies installed locally
+node_modules
+
+# Build artifacts
+dist
+build
+*.o
+*.pyc
+__pycache__
+
+# Test files
+test
+tests
+coverage
+.nyc_output
+
+# Configuration files not needed in the image
+.env
+.env.*
+docker-compose*.yml
+Dockerfile
+
+# CI/CD configuration
+.github
+.gitlab-ci.yml
+.circleci
+Jenkinsfile
+
+# OS files
+.DS_Store
+Thumbs.db
+EOF

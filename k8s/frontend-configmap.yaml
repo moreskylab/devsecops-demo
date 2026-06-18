@@ -6,61 +6,37 @@ metadata:
   labels:
     app.kubernetes.io/part-of: frontend
 data:
-  # .template file format hooks into nginxinc's automatic envsubst bootstrap logic
   default.conf.template: |
     server {
+        # Evaluated at runtime from the pod spec container environment variables
         listen ${PORT};
         server_name localhost;
 
-        # 1. Information Leakage Protection
         server_tokens off;
 
-        # 2. Strict Production Security Headers
-        add_header X-Frame-Options "DENY" always;
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header X-XSS-Protection "1; mode=block" always;
-        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';" always;
-        add_header Referrer-Policy "no-referrer-when-downgrade" always;
-        add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
-
-        # 3. Short-Term Single-Page Application Caching Rules
+        # Static Application Asset Serving
         location / {
             root   /usr/share/nginx/html;
             index  index.html index.htm;
             try_files $uri $uri/ /index.html;
             add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0" always;
-            
-            # Re-apply global security headers (Required as nested locations clear parent declarations)
-            add_header X-Frame-Options "DENY" always;
-            add_header X-Content-Type-Options "nosniff" always;
-            add_header X-XSS-Protection "1; mode=block" always;
-            add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';" always;
-            add_header Referrer-Policy "no-referrer-when-downgrade" always;
-            add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
         }
 
-        # 4. Aggressive Long-Term Cache Rules for Hashed Vite Assets (1 year)
+        # Optimized caching for fingerprinted build assets
         location /assets/ {
             root /usr/share/nginx/html;
             expires 1y;
             add_header Cache-Control "public, immutable, max-age=31536000";
-            
-            add_header X-Frame-Options "DENY" always;
-            add_header X-Content-Type-Options "nosniff" always;
-            add_header X-XSS-Protection "1; mode=block" always;
-            add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';" always;
-            add_header Referrer-Policy "no-referrer-when-downgrade" always;
-            add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
         }
 
-        # 5. Cloud-Native Health Check Routing Endpoint
+        # Liveness & Readiness Probing Endpoint
         location /healthz {
             access_log off;
             add_header Content-Type text/plain;
             return 200 'OK';
         }
 
-        # 6. Information Leak Isolation Routing Engine
+        # Clean isolation matrix
         error_page 400 401 403 404 500 502 503 504 /error.html;
         location = /error.html {
             root   /usr/share/nginx/html;
