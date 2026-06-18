@@ -1,0 +1,390 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+---
+# ==========================================
+# STORAGE CONFIGURATION (Persistent Storage)
+# ==========================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: observability
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: alloy-data-pvc
+  namespace: observability
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+# ==========================================
+# CONFIGMAPS (Configuration Injection)
+# ==========================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy-config
+  namespace: observability
+data:
+  config.alloy: |
+    // 1. INGESTION (Receivers)
+    otelcol.receiver.otlp "default" {
+      grpc { endpoint = "0.0.0.0:4317" }
+      http { endpoint = "0.0.0.0:4318" }
+
+      output {
+        metrics = [otelcol.exporter.prometheus.to_mimir.input]
+        traces  = [otelcol.exporter.otlp.to_tempo.input]
+        logs    = [otelcol.exporter.loki.to_loki.input]
+      }
+    }
+
+    pyroscope.receive_http "default" {
+      http {
+        listen_address = "0.0.0.0"
+        listen_port    = 4040
+      }
+      forward_to = [pyroscope.write.to_pyroscope.receiver]
+    }
+
+    // 2. EXPORTERS & FORWARDING
+    otelcol.exporter.prometheus "to_mimir" {
+      forward_to = [prometheus.remote_write.mimir.receiver]
+    }
+
+    prometheus.remote_write "mimir" {
+      endpoint { 
+        url = "http://lgtm:3000/api/v1/push" 
+      }
+    }
+
+    otelcol.exporter.otlp "to_tempo" {
+      client {
+        endpoint = "lgtm:4317"
+        tls { insecure = true }
+      }
+    }
+
+    otelcol.exporter.loki "to_loki" {
+      forward_to = [loki.write.lgtm_loki.receiver]
+    }
+
+    loki.write "lgtm_loki" {
+      endpoint {
+        url = "http://lgtm:3000/loki/api/v1/push"
+      }
+    }
+
+    pyroscope.write "to_pyroscope" {
+      endpoint { 
+        url = "http://lgtm:3000" 
+      }
+    }
+---
+# ==========================================
+# POSTGRES COMPONENT
+# ==========================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: docker.io/library/postgres:alpine
+          env:
+            - name: POSTGRES_USER
+              value: "postgres"
+            - name: POSTGRES_PASSWORD
+              value: "postgres"
+            - name: POSTGRES_DB
+              value: "postgres"
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: postgres-storage
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: postgres-storage
+          persistentVolumeClaim:
+            claimName: postgres-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: observability
+spec:
+  ports:
+    - port: 5432
+      targetPort: 5432
+  selector:
+    app: postgres
+---
+# ==========================================
+# GRAFANA LGTM STACK COMPONENT
+# ==========================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lgtm
+  namespace: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lgtm
+  template:
+    metadata:
+      labels:
+        app: lgtm
+    spec:
+      containers:
+        - name: lgtm
+          image: grafana/otel-lgtm:latest
+          ports:
+            - containerPort: 3000
+            - containerPort: 4317
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lgtm
+  namespace: observability
+spec:
+  ports:
+    - name: http-grafana
+      port: 3000
+      targetPort: 3000
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+  selector:
+    app: lgtm
+---
+# ==========================================
+# GRAFANA ALLOY COLLECTOR COMPONENT
+# ==========================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alloy
+  namespace: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alloy
+  template:
+    metadata:
+      labels:
+        app: alloy
+    spec:
+      containers:
+        - name: alloy
+          image: grafana/alloy:latest
+          args:
+            - run
+            - --stability.level=public-preview
+            - /etc/alloy/config.alloy
+          ports:
+            - containerPort: 4317
+            - containerPort: 4318
+            - containerPort: 4040
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/alloy
+            - name: alloy-storage
+              mountPath: /var/lib/alloy/data
+      volumes:
+        - name: config-volume
+          configMap:
+            name: alloy-config
+        - name: alloy-storage
+          persistentVolumeClaim:
+            claimName: alloy-data-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alloy
+  namespace: observability
+spec:
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+    - name: profiling
+      port: 4040
+      targetPort: 4040
+  selector:
+    app: alloy
+---
+# ==========================================
+# APPLICATION: BACKEND
+# ==========================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+        - name: backend
+          image: docker.io/moreskylab/backend:1.0.0
+          ports:
+            - containerPort: 8000
+          # Configures the application to talk to Alloy internally
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://alloy:4317"
+          envFrom:
+            - configMapRef:
+                name: backend-env-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: observability
+spec:
+  ports:
+    - port: 8000
+      targetPort: 8000
+  selector:
+    app: backend
+---
+# ==========================================
+# APPLICATION: FRONTEND
+# ==========================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: docker.io/moreskylab/frontend:1.0.0
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: frontend-env-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: observability
+spec:
+  ports:
+    - port: 8080
+      targetPort: 8080
+  selector:
+    app: frontend
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: external-ingress
+spec:
+  controllerName: gateway.networking.k8s.io/gateway-api-controller
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: app-gateway
+  namespace: observability
+spec:
+  gatewayClassName: external-ingress
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+# ==========================================
+# HTTPROUTE: Application Traffic Routing
+# ==========================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: app-traffic-route
+  namespace: observability
+spec:
+  parentRefs:
+    - name: app-gateway
+  rules:
+    # 1. Route OTel traces from the client directly to Grafana Alloy
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/traces
+      backendRefs:
+        - name: alloy
+          port: 4318 # Using OTLP/HTTP ingestion port
+
+    # 2. Route application database actions directly to the Backend API
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /items
+      backendRefs:
+        - name: backend
+          port: 8000
+
+    # 3. Fallback catch-all to route everything else to the Frontend UI assets
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: frontend
+          port: 8080

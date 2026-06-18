@@ -11,7 +11,7 @@ import { W3CTraceContextPropagator } from '@opentelemetry/core';
 import { trace, SpanStatusCode } from '@opentelemetry/api';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
-import { XMLHttpRequestInstrumentation } from '@opentelemetry/instrumentation-xml-http-request';
+// import { XMLHttpRequestInstrumentation } from '@opentelemetry/instrumentation-xml-http-request';
 
 // Ensure Vite/TypeScript recognizes the environment variables types
 // const COMPILED_URL = (import.meta as any).env?.VITE_API_URL || '';
@@ -67,9 +67,6 @@ interface Item {
 registerInstrumentations({
     instrumentations: [
         new FetchInstrumentation({
-            propagateTraceHeaderCorsUrls: [ /.*/ ],
-        }),
-        new XMLHttpRequestInstrumentation({
             propagateTraceHeaderCorsUrls: [ /.*/ ],
         }),
         new UserInteractionInstrumentation({
