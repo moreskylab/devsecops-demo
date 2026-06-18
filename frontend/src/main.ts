@@ -14,13 +14,24 @@ import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic
 import { XMLHttpRequestInstrumentation } from '@opentelemetry/instrumentation-xml-http-request';
 
 // Ensure Vite/TypeScript recognizes the environment variables types
-const COMPILED_URL = (import.meta as any).env?.VITE_API_URL || '';
-const BASE_DOMAIN = (COMPILED_URL && !COMPILED_URL.includes('__RUNTIME_')) 
-    ? COMPILED_URL 
-    : '__RUNTIME_VITE_API_URL__'; 
+// const COMPILED_URL = (import.meta as any).env?.VITE_API_URL || '';
 
-const API_URL = `${BASE_DOMAIN}/api`;
-const finalOtlpUrl = `${BASE_DOMAIN}/v1/traces`;
+// 1. Detect if the fallback placeholder string is literally active
+// const isPlaceholderActive = !COMPILED_URL || COMPILED_URL.includes('__RUNTIME_');
+
+// 2. Resolve the domain safely based on the placeholder state
+// const BASE_DOMAIN = !isPlaceholderActive 
+//     ? COMPILED_URL 
+//     : (window.location.hostname === 'localhost' 
+//         ? 'http://localhost:8080' // Your local backend dev server port
+//         : window.location.origin); 
+
+// const BASE_DOMAIN = 'http://localhost:8080'
+// const API_URL = `${BASE_DOMAIN}/api`;
+// const finalOtlpUrl = `${BASE_DOMAIN}/v1/traces`;
+const API_URL = '/items';
+const finalOtlpUrl = '/v1/traces';
+
 
 // --- TELEMETRY SYSTEM REGISTRATION ---
 const telemetryResource = resourceFromAttributes({

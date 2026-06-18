@@ -18,7 +18,7 @@ FROM nginxinc/nginx-unprivileged:1.27-alpine
 
 # Copy build artifacts from Stage 1 with secure read-only permissions
 COPY --from=builder --chown=nginx:nginx --chmod=0555 /app/dist /usr/share/nginx/html
-COPY --chown=nginx:nginx --chmod=0444 nginx.conf /etc/nginx/conf.d/default.conf
+COPY --chown=nginx:nginx --chmod=0444 nginx-insecure.conf /etc/nginx/conf.d/default.conf
 
 # Enforce deterministic non-root execution by user ID (UID 101 is 'nginx')
 USER 101

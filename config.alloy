@@ -58,6 +58,6 @@ otelcol.exporter.otlp "to_loki" {
 // --- Profiles Pipeline ---
 pyroscope.write "to_pyroscope" {
   endpoint { 
-    url = "http://pyroscope:4040" 
+    url = "http://lgtm:4040" 
   }
 }

@@ -40,6 +40,8 @@ except ImportError:
 
 if PYROSCOPE_AVAILABLE:
     pyscope_server = os.getenv("PYROSCOPE_SERVER", "http://alloy:4040")
+    if "?format=" not in pyscope_server:
+        pyscope_server = f"{pyscope_server.rstrip('/')}?format=pyroscope"
     pyroscope.configure(
         application_name="backend",
         server_address=pyscope_server,
@@ -47,24 +49,20 @@ if PYROSCOPE_AVAILABLE:
     )
 
 # --- TRACING SETUP ---
-# --- TRACING SETUP ---
 ENABLE_OBSERVABILITY = os.getenv("ENABLE_OBSERVABILITY", "false").lower() == "true"
 
-# Define internal container endpoint targeting our Alloy agent
-ALLOY_ENDPOINT = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "alloy:4317")
-
 if ENABLE_OBSERVABILITY:
-    # Explicitly direct endpoints to the Alloy collector
-    trace_exporter = OTLPSpanExporter(endpoint=ALLOY_ENDPOINT, insecure=True)
-    metric_exporter = OTLPMetricExporter(endpoint=ALLOY_ENDPOINT, insecure=True)
-    log_exporter = OTLPLogExporter(endpoint=ALLOY_ENDPOINT, insecure=True)
+    # Let the SDK natively read OTEL_EXPORTER_OTLP_ENDPOINT from the environment.
+    # It will automatically fall back to localhost:4317 if variables are missing.
+    trace_exporter = OTLPSpanExporter()
+    metric_exporter = OTLPMetricExporter()
+    log_exporter = OTLPLogExporter()
 else:
     from opentelemetry.sdk.trace.export import ConsoleSpanExporter
     from opentelemetry.sdk.metrics.export import ConsoleMetricExporter
     trace_exporter = ConsoleSpanExporter()
     metric_exporter = ConsoleMetricExporter()
     log_exporter = None 
-
 
 trace_provider = TracerProvider(resource=resource)
 trace_provider.add_span_processor(BatchSpanProcessor(trace_exporter))
@@ -84,9 +82,11 @@ items_created_counter = meter.create_counter(
 
 # --- LOGGING SETUP ---
 logger_provider = LoggerProvider(resource=resource)
+# FIX: Conditioned the processor attachment to prevent errors when log_exporter is None
 if log_exporter:
     logger_provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
-set_logger_provider(logger_provider)
+    set_logger_provider(logger_provider)
+
 
 # Use LoggingInstrumentor to handle standard logging injection cleanly [1]
 LoggingInstrumentor().instrument(set_logging_format=True)
@@ -230,3 +230,4 @@ def delete_item(item_id: int, db: SessionDep):
     db.delete(db_item)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
