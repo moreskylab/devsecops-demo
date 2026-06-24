@@ -1,3 +1,4 @@
+---
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -45,8 +46,7 @@ spec:
     - fromEntities:
         - world
     - fromEndpoints:
-        - matchLabels:
-            {} # Allow traffic from all app namespaces to Alloy receivers
+        - matchLabels: {} # Allows matching traffic scoped within the matching ecosystem rules
       toPorts:
         - ports:
             - port: "4317"
@@ -305,7 +305,41 @@ spec:
     app: alloy
 ---
 # ==========================================
-# APPLICATION: BACKEND
+# APPLICATION CONFIGS & SECRETS
+# ==========================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: backend-secret
+  namespace: observability
+type: Opaque
+stringData:
+  DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/postgres"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-env-config
+  namespace: observability
+data:
+  ALLOWED_ORIGIN: "http://example.com"
+  WEB_CONCURRENCY: "4"
+  PORT: "8000"
+  ENABLE_OBSERVABILITY: "true"
+  PYROSCOPE_SERVER: "http://alloy:4040?format=pyroscope"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-env-config
+  namespace: observability
+data:
+  VITE_ENABLE_TRACKING: "true"
+  VITE_APP_VERSION: "1.0.0"
+  VITE_API_BASE_URL: "http://example.com"
+---
+# ==========================================
+# APPLICATION: BACKEND WORKLOAD
 # ==========================================
 apiVersion: apps/v1
 kind: Deployment
@@ -313,7 +347,12 @@ metadata:
   name: backend
   namespace: observability
 spec:
-  replicas: 1
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: backend
@@ -324,12 +363,38 @@ spec:
     spec:
       containers:
         - name: backend
-          image: docker.io/moreskylab/backend:1.0.0
+          image: moreskylab/backend:1.0.0
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000
+              name: http
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
           env:
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://alloy:4317"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secret
+                  key: DATABASE_URL
           envFrom:
             - configMapRef:
                 name: backend-env-config
@@ -343,11 +408,13 @@ spec:
   ports:
     - port: 8000
       targetPort: 8000
+      protocol: TCP
+      name: http
   selector:
     app: backend
 ---
 # ==========================================
-# APPLICATION: FRONTEND
+# APPLICATION: FRONTEND WORKLOAD
 # ==========================================
 apiVersion: apps/v1
 kind: Deployment
@@ -355,7 +422,9 @@ metadata:
   name: frontend
   namespace: observability
 spec:
-  replicas: 1
+  replicas: 2
+  strategy:
+    type: RollingUpdate
   selector:
     matchLabels:
       app: frontend
@@ -366,9 +435,30 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: docker.io/moreskylab/frontend:1.0.0
+          image: moreskylab/frontend:1.0.0
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
+              name: http
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
           envFrom:
             - configMapRef:
                 name: frontend-env-config
@@ -382,26 +472,39 @@ spec:
   ports:
     - port: 8080
       targetPort: 8080
+      protocol: TCP
+      name: http
   selector:
     app: frontend
 ---
 # ==========================================
-# GATEWAY API (Cilium Controller Integration)
+# ENVOY GATEWAY INFRASTRUCTURE
 # ==========================================
-apiVersion: gateway.networking.k8s.io/v1
-kind: GatewayClass
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
 metadata:
-  name: external-ingress
+  name: cluster-telemetry-policy
+  namespace: observability
 spec:
-  controllerName: io.cilium/gateway-controller
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: external-envoy-gateway
+  telemetry:
+    tracing:
+      samplingRate: 100
+      provider:
+        type: OpenTelemetry
+        openTelemetry:
+          endpoint: "alloy.observability.svc.cluster.local:4317"
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
-  name: app-gateway
+  name: external-envoy-gateway
   namespace: observability
 spec:
-  gatewayClassName: external-ingress
+  gatewayClassName: envoy-gateway
   listeners:
     - name: http
       protocol: HTTP
@@ -410,29 +513,21 @@ spec:
         namespaces:
           from: Same
 ---
-# ==========================================
-# HTTPROUTE: Application Traffic Routing
-# ==========================================
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: app-traffic-route
+  name: application-routes
   namespace: observability
 spec:
   parentRefs:
-    - name: app-gateway
+    - name: external-envoy-gateway
+  hostnames:
+    - "observability.example.com"
   rules:
     - matches:
         - path:
             type: PathPrefix
-            value: /v1/traces
-      backendRefs:
-        - name: alloy
-          port: 4318
-    - matches:
-        - path:
-            type: PathPrefix
-            value: /items
+            value: /api
       backendRefs:
         - name: backend
           port: 8000
@@ -443,3 +538,4 @@ spec:
       backendRefs:
         - name: frontend
           port: 8080
+

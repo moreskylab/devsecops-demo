@@ -14,6 +14,7 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
+  storageClassName: local-path
   resources:
     requests:
       storage: 5Gi
@@ -26,12 +27,13 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
+  storageClassName: local-path
   resources:
     requests:
       storage: 1Gi
 ---
 # ==========================================
-# CONFIGMAPS (Configuration Injection)
+# CONFIGMAPS (Optimized OpenTelemetry Pipeline)
 # ==========================================
 apiVersion: v1
 kind: ConfigMap
@@ -48,7 +50,7 @@ data:
       output {
         metrics = [otelcol.exporter.prometheus.to_mimir.input]
         traces  = [otelcol.exporter.otlp.to_tempo.input]
-        logs    = [otelcol.exporter.loki.to_loki.input]
+        logs    = [otelcol.exporter.otlp.to_loki.input]
       }
     }
 
@@ -67,7 +69,7 @@ data:
 
     prometheus.remote_write "mimir" {
       endpoint { 
-        url = "http://lgtm:3000/api/v1/push" 
+        url = "http://lgtm:9090/api/v1/push" 
       }
     }
 
@@ -78,19 +80,16 @@ data:
       }
     }
 
-    otelcol.exporter.loki "to_loki" {
-      forward_to = [loki.write.lgtm_loki.receiver]
-    }
-
-    loki.write "lgtm_loki" {
-      endpoint {
-        url = "http://lgtm:3000/loki/api/v1/push"
+    otelcol.exporter.otlp "to_loki" {
+      client {
+        endpoint = "lgtm:4317"
+        tls { insecure = true }
       }
     }
 
     pyroscope.write "to_pyroscope" {
       endpoint { 
-        url = "http://lgtm:3000" 
+        url = "http://lgtm:4040" 
       }
     }
 ---
@@ -126,7 +125,7 @@ spec:
             - containerPort: 5432
           volumeMounts:
             - name: postgres-storage
-              mountPath: /var/lib/postgresql/data
+              mountPath: /var/lib/postgresql
       volumes:
         - name: postgres-storage
           persistentVolumeClaim:
@@ -168,6 +167,8 @@ spec:
           ports:
             - containerPort: 3000
             - containerPort: 4317
+            - containerPort: 9090
+            - containerPort: 4040
 ---
 apiVersion: v1
 kind: Service
@@ -182,6 +183,12 @@ spec:
     - name: otlp-grpc
       port: 4317
       targetPort: 4317
+    - name: prometheus
+      port: 9090
+      targetPort: 9090
+    - name: pyroscope
+      port: 4040
+      targetPort: 4040
   selector:
     app: lgtm
 ---
@@ -247,7 +254,41 @@ spec:
     app: alloy
 ---
 # ==========================================
-# APPLICATION: BACKEND
+# APPLICATION CONFIGS & SECRETS
+# ==========================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: backend-secret
+  namespace: observability
+type: Opaque
+stringData:
+  DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/postgres"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-env-config
+  namespace: observability
+data:
+  ALLOWED_ORIGIN: "http://example.com"
+  WEB_CONCURRENCY: "4"
+  PORT: "8000"
+  ENABLE_OBSERVABILITY: "true"
+  PYROSCOPE_SERVER: "http://alloy:4040?format=pyroscope"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-env-config
+  namespace: observability
+data:
+  VITE_ENABLE_TRACKING: "true"
+  VITE_APP_VERSION: "1.0.0"
+  VITE_API_BASE_URL: "http://example.com"
+---
+# ==========================================
+# APPLICATION: BACKEND WORKLOAD
 # ==========================================
 apiVersion: apps/v1
 kind: Deployment
@@ -255,7 +296,12 @@ metadata:
   name: backend
   namespace: observability
 spec:
-  replicas: 1
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: backend
@@ -266,13 +312,38 @@ spec:
     spec:
       containers:
         - name: backend
-          image: docker.io/moreskylab/backend:1.0.0
+          image: moreskylab/backend:1.0.0
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000
-          # Configures the application to talk to Alloy internally
+              name: http
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
           env:
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://alloy:4317"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secret
+                  key: DATABASE_URL
           envFrom:
             - configMapRef:
                 name: backend-env-config
@@ -286,11 +357,13 @@ spec:
   ports:
     - port: 8000
       targetPort: 8000
+      protocol: TCP
+      name: http
   selector:
     app: backend
 ---
 # ==========================================
-# APPLICATION: FRONTEND
+# APPLICATION: FRONTEND WORKLOAD
 # ==========================================
 apiVersion: apps/v1
 kind: Deployment
@@ -298,7 +371,9 @@ metadata:
   name: frontend
   namespace: observability
 spec:
-  replicas: 1
+  replicas: 2
+  strategy:
+    type: RollingUpdate
   selector:
     matchLabels:
       app: frontend
@@ -309,9 +384,30 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: docker.io/moreskylab/frontend:1.0.0
+          image: moreskylab/frontend:1.0.0
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
+              name: http
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
           envFrom:
             - configMapRef:
                 name: frontend-env-config
@@ -325,30 +421,10 @@ spec:
   ports:
     - port: 8080
       targetPort: 8080
+      protocol: TCP
+      name: http
   selector:
     app: frontend
----
-apiVersion: gateway.networking.k8s.io/v1
-kind: GatewayClass
-metadata:
-  name: external-ingress
-spec:
-  controllerName: gateway.networking.k8s.io/gateway-api-controller
----
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: app-gateway
-  namespace: observability
-spec:
-  gatewayClassName: external-ingress
-  listeners:
-    - name: http
-      protocol: HTTP
-      port: 80
-      allowedRoutes:
-        namespaces:
-          from: Same
 ---
 # ==========================================
 # HTTPROUTE: Application Traffic Routing
@@ -368,8 +444,8 @@ spec:
             type: PathPrefix
             value: /v1/traces
       backendRefs:
-        - name: alloy
-          port: 4318 # Using OTLP/HTTP ingestion port
+        - name: alloy-service # Ensure this matches your Alloy service metadata name
+          port: 4318
 
     # 2. Route application database actions directly to the Backend API
     - matches:
