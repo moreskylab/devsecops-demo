@@ -97,11 +97,12 @@ data:
 # POSTGRES COMPONENT
 # ==========================================
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: postgres
   namespace: observability
 spec:
+  serviceName: "postgres"
   replicas: 1
   selector:
     matchLabels:
@@ -310,6 +311,10 @@ spec:
       labels:
         app: backend
     spec:
+      initContainers:
+        - name: wait-for-postgres
+          image: docker.io/library/postgres:alpine
+          command: ['sh', '-c', 'until pg_isready -h postgres -p 5432 -U postgres; do echo "Waiting for PostgreSQL..."; sleep 2; done;']
       containers:
         - name: backend
           image: moreskylab/backend:1.0.0
@@ -444,7 +449,7 @@ spec:
             type: PathPrefix
             value: /v1/traces
       backendRefs:
-        - name: alloy-service # Ensure this matches your Alloy service metadata name
+        - name: alloy # Ensure this matches your Alloy service metadata name
           port: 4318
 
     # 2. Route application database actions directly to the Backend API
