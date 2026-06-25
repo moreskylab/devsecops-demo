@@ -470,6 +470,23 @@ spec:
     - "upward-snipping-certainty.ngrok-free.dev"
   rules:
     # -------------------------------------------------------------
+    # NEW ROUTE: Grafana / LGTM Dashboard Access
+    # -------------------------------------------------------------
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /grafana
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      backendRefs:
+        - name: lgtm # Replace with your actual Kubernetes Service name
+          port: 3000
+
+    # -------------------------------------------------------------
     # ROUTE 1: Trace collection path (Evaluated first by length match)
     # -------------------------------------------------------------
     - matches:
@@ -507,13 +524,3 @@ spec:
         - name: frontend
           port: 8080
 
-    # -------------------------------------------------------------
-    # NEW ROUTE: Grafana / LGTM Dashboard Access
-    # -------------------------------------------------------------
-    - matches:
-        - path:
-            type: PathPrefix
-            value: /grafana
-      backendRefs:
-        - name: lgtm # Replace with your actual Kubernetes Service name for LGTM/Grafana
-          port: 3000
