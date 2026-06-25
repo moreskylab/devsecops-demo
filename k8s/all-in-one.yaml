@@ -506,3 +506,14 @@ spec:
       backendRefs:
         - name: frontend
           port: 8080
+
+    # -------------------------------------------------------------
+    # NEW ROUTE: Grafana / LGTM Dashboard Access
+    # -------------------------------------------------------------
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /grafana
+      backendRefs:
+        - name: lgtm # Replace with your actual Kubernetes Service name for LGTM/Grafana
+          port: 3000
