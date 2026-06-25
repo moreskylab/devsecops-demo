@@ -127,7 +127,6 @@ let isEditing = false;
 
 if (!itemForm || !itemIdInput || !itemTitleInput || !itemDescInput || !submitBtn || !cancelBtn || !itemsList) {
     const errorMsg = "Required DOM elements missing from the page.";
-    // Emit fatal configuration error log
     logger.emit({
         severityNumber: SeverityNumber.FATAL,
         severityText: 'FATAL',
@@ -138,6 +137,7 @@ if (!itemForm || !itemIdInput || !itemTitleInput || !itemDescInput || !submitBtn
 }
 
 async function fetchItems(): Promise<void> {
+    const startTime = performance.now(); // Start timer
     try {
         const response = await fetch(API_URL);
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
@@ -150,6 +150,12 @@ async function fetchItems(): Promise<void> {
             body: 'Successfully fetched items list',
             attributes: { count: items.length }
         });
+        
+        // Record successful duration
+        operationDurationHistogram.record(performance.now() - startTime, { 
+            operation: 'fetchItems', 
+            status: 'success' 
+        });
     } catch (err) {
         const errorInstance = err as Error;
         logger.emit({
@@ -157,6 +163,12 @@ async function fetchItems(): Promise<void> {
             severityText: 'ERROR',
             body: `Failed fetching records: ${errorInstance.message}`,
             attributes: { error_type: errorInstance.name }
+        });
+        
+        // Record failed duration
+        operationDurationHistogram.record(performance.now() - startTime, { 
+            operation: 'fetchItems', 
+            status: 'error' 
         });
     }
 }
@@ -182,6 +194,7 @@ async function saveItem(e: Event): Promise<void> {
 
     const url = isEditing && id ? `${API_URL}/${id}` : API_URL;
     const method = isEditing && id ? 'PUT' : 'POST';
+    const startTime = performance.now(); // Start timer
 
     await tracer.startActiveSpan('ui.submit_item', async (span) => {
         try {
@@ -198,6 +211,18 @@ async function saveItem(e: Event): Promise<void> {
             await fetchItems();
             span.setStatus({ code: SpanStatusCode.OK });
 
+            // METRICS: Increment counter if a NEW item was successfully created
+            if (method === 'POST') {
+                itemCreationCounter.add(1, { status: 'success' });
+            }
+
+            // METRICS: Record duration
+            operationDurationHistogram.record(performance.now() - startTime, { 
+                operation: 'saveItem', 
+                method: method, 
+                status: 'success' 
+            });
+
             logger.emit({
                 severityNumber: SeverityNumber.INFO,
                 severityText: 'INFO',
@@ -209,6 +234,13 @@ async function saveItem(e: Event): Promise<void> {
             span.recordException(errorInstance);
             span.setStatus({ code: SpanStatusCode.ERROR, message: errorInstance.message });
             
+            // METRICS: Record failed duration
+            operationDurationHistogram.record(performance.now() - startTime, { 
+                operation: 'saveItem', 
+                method: method, 
+                status: 'error' 
+            });
+
             logger.emit({
                 severityNumber: SeverityNumber.ERROR,
                 severityText: 'ERROR',
@@ -223,6 +255,7 @@ async function saveItem(e: Event): Promise<void> {
 
 async function deleteItem(id: number): Promise<void> {
     if (!window.confirm("Delete this item?")) return;
+    const startTime = performance.now(); // Start timer
     
     await tracer.startActiveSpan('ui.delete_item', async (span) => {
         try {
@@ -231,6 +264,12 @@ async function deleteItem(id: number): Promise<void> {
             if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
             await fetchItems();
             span.setStatus({ code: SpanStatusCode.OK });
+
+            // METRICS: Record duration
+            operationDurationHistogram.record(performance.now() - startTime, { 
+                operation: 'deleteItem', 
+                status: 'success' 
+            });
 
             logger.emit({
                 severityNumber: SeverityNumber.INFO,
@@ -243,6 +282,12 @@ async function deleteItem(id: number): Promise<void> {
             span.recordException(errorInstance);
             span.setStatus({ code: SpanStatusCode.ERROR, message: errorInstance.message });
             
+            // METRICS: Record failed duration
+            operationDurationHistogram.record(performance.now() - startTime, { 
+                operation: 'deleteItem', 
+                status: 'error' 
+            });
+
             logger.emit({
                 severityNumber: SeverityNumber.ERROR,
                 severityText: 'ERROR',
@@ -257,6 +302,7 @@ async function deleteItem(id: number): Promise<void> {
 
 function renderItems(items: Item[]): void {
     if (!itemsList) return;
+    const startTime = performance.now(); // Start timer
     
     tracer.startActiveSpan('ui.render_list', (span) => {
         span.setAttribute('items.count', items.length);
@@ -293,6 +339,11 @@ function renderItems(items: Item[]): void {
 
         itemsList.appendChild(fragment);
         span.end();
+        
+        // METRICS: Record render duration
+        operationDurationHistogram.record(performance.now() - startTime, { 
+            operation: 'renderItems' 
+        });
     });
 }
 
@@ -322,9 +373,7 @@ function resetForm(): void {
     cancelBtn.hidden = true;
 }
 
-// Fixed listeners
 itemForm.addEventListener('submit', saveItem);
 cancelBtn.addEventListener('click', resetForm);
 
-// Initial items fetch invocation on script load
 fetchItems();
