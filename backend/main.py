@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, status, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import SQLModel, Field, create_engine, Session, select
-from starlette.concurrency import run_in_threadpool  # Added to offload blocking DDL calls
+from starlette.concurrency import run_in_threadpool  
 
 # --- OPENTELEMETRY & PROFILING IMPORTS ---
 from opentelemetry import trace, metrics
@@ -22,10 +22,13 @@ from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
 from opentelemetry._logs import set_logger_provider
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+from opentelemetry.sdk.trace.sampling import TraceIdRatioBased
 
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from opentelemetry.instrumentation.logging import LoggingInstrumentor
+
+
 
 
 # --- RESOURCE DEFINITION ---
@@ -48,28 +51,33 @@ if PYROSCOPE_AVAILABLE:
         enable_logging=True,
     )
 
-# --- TRACING SETUP ---
+# --- TRACING & METRICS SETUP ---
 ENABLE_OBSERVABILITY = os.getenv("ENABLE_OBSERVABILITY", "false").lower() == "true"
 
 if ENABLE_OBSERVABILITY:
-    # Let the SDK natively read OTEL_EXPORTER_OTLP_ENDPOINT from the environment.
-    # It will automatically fall back to localhost:4317 if variables are missing.
     trace_exporter = OTLPSpanExporter()
     metric_exporter = OTLPMetricExporter()
     log_exporter = OTLPLogExporter()
 else:
     from opentelemetry.sdk.trace.export import ConsoleSpanExporter
     from opentelemetry.sdk.metrics.export import ConsoleMetricExporter
+    from opentelemetry.sdk._logs.export import ConsoleLogExporter # OPTIMIZATION: Added console log fallback
     trace_exporter = ConsoleSpanExporter()
     metric_exporter = ConsoleMetricExporter()
-    log_exporter = None 
+    log_exporter = ConsoleLogExporter()
 
-trace_provider = TracerProvider(resource=resource)
+# Sample only 10% of traffic (0.1)
+sampler = TraceIdRatioBased(0.1)
+
+trace_provider = TracerProvider(
+    resource=resource,
+    sampler=sampler # <-- Inject the sampler here
+)
+
 trace_provider.add_span_processor(BatchSpanProcessor(trace_exporter))
 trace.set_tracer_provider(trace_provider)
 tracer = trace.get_tracer(__name__)
 
-# --- METRICS SETUP ---
 metric_reader = PeriodicExportingMetricReader(metric_exporter)
 meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
 metrics.set_meter_provider(meter_provider)
@@ -82,17 +90,17 @@ items_created_counter = meter.create_counter(
 
 # --- LOGGING SETUP ---
 logger_provider = LoggerProvider(resource=resource)
-# FIX: Conditioned the processor attachment to prevent errors when log_exporter is None
-if log_exporter:
-    logger_provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
-    set_logger_provider(logger_provider)
+logger_provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
+set_logger_provider(logger_provider)
 
-
-# Use LoggingInstrumentor to handle standard logging injection cleanly [1]
 LoggingInstrumentor().instrument(set_logging_format=True)
 
+class EndpointFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.args and len(record.args) >= 3 and record.args[2] not in ["/healthz", "/readyz"]
+
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("cloud_native_backend")
+logger = logging.getLogger("cloud_native_backend").addFilter(EndpointFilter())
 
 # --- DATABASE CONFIGURATION ---
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./app.db")
@@ -132,11 +140,10 @@ class ItemResponse(ItemBase):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Initializing database and tables...")
-    
-    # ✅ FIXED: Avoid contextvar crash by moving synchronous DDL initialization to a worker thread
     await run_in_threadpool(SQLModel.metadata.create_all, engine)
     
     yield
+    
     logger.info("Application shutting down. Flushing telemetry data...")
     trace_provider.force_flush()
     meter_provider.force_flush()
@@ -149,7 +156,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-FastAPIInstrumentor.instrument_app(app)
+FastAPIInstrumentor.instrument_app(app,excluded_urls="healthz,readyz,metrics")
 
 app.add_middleware(
     CORSMiddleware,
@@ -171,7 +178,6 @@ SessionDep = Annotated[Session, Depends(get_db)]
 async def liveness_probe() -> dict[str, str]:
     return {"status": "alive"}
 
-# FIXED: Removed 'async' keyword to keep database call thread-safe and non-blocking
 @app.get("/readyz", status_code=status.HTTP_200_OK, tags=["Probes"])
 def readiness_probe(db: SessionDep) -> dict[str, str]:
     try:
@@ -192,15 +198,16 @@ def create_item(item: ItemCreate, db: SessionDep):
     db.commit()
     db.refresh(db_item)
     
-    items_created_counter.add(1, {"item.title": db_item.title})
+    # OPTIMIZATION: Removed db_item.title to prevent metrics cardinality explosion
+    items_created_counter.add(1, {"status": "success"}) 
     logger.info(f"Successfully created new item with ID: {db_item.id}")
     
     return db_item
 
 @app.get("/items", response_model=list[ItemResponse], tags=["Items"])
-def read_items(db: SessionDep):
+def read_items(db: SessionDep, skip: int = 0, limit: int = 100): # OPTIMIZATION: Added Pagination
     with tracer.start_as_current_span("fetch_all_items_from_db") as span:
-        items = db.exec(select(Item)).all()
+        items = db.exec(select(Item).offset(skip).limit(limit)).all()
         span.set_attribute("items.count", len(items))
         return items
 
@@ -219,7 +226,6 @@ def update_item(item_id: int, updated_item: ItemCreate, db: SessionDep):
     db.refresh(db_item)
     return db_item
 
-# FIXED: Completed the truncated endpoint logic
 @app.delete("/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Items"])
 def delete_item(item_id: int, db: SessionDep):
     db_item = db.get(Item, item_id)
@@ -230,4 +236,3 @@ def delete_item(item_id: int, db: SessionDep):
     db.delete(db_item)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
-

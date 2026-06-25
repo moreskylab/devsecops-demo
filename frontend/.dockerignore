@@ -44,10 +44,7 @@ Dockerfile
 .circleci
 Jenkinsfile
 
-README.md
-
 # OS files
 .DS_Store
 Thumbs.db
 EOF
-

@@ -102,16 +102,35 @@ interface Item {
     description: string | null;
 }
 
+// registerInstrumentations({
+//     instrumentations: [
+//         new FetchInstrumentation({
+//             propagateTraceHeaderCorsUrls: [ /.*/ ],
+//         }),
+//         new UserInteractionInstrumentation({
+//             eventNames: ['click', 'submit'],
+//         }),
+//     ],
+// });
+
 registerInstrumentations({
     instrumentations: [
         new FetchInstrumentation({
-            propagateTraceHeaderCorsUrls: [ /.*/ ],
+            // ONLY propagate headers to your actual backend domain
+            propagateTraceHeaderCorsUrls: [ /.*upward-snipping-certainty\.ngrok-free\.dev.*/ ],
+            
+            // IGNORE static assets and irrelevant APIs
+            ignoreUrls: [
+                /\.(css|js|png|jpg|jpeg|svg|woff|woff2)$/, 
+                /google-analytics\.com/
+            ],
         }),
         new UserInteractionInstrumentation({
             eventNames: ['click', 'submit'],
         }),
     ],
 });
+
 
 const tracer = trace.getTracer('frontend-tracer', '1.0.0');
 
@@ -124,6 +143,7 @@ const cancelBtn = document.getElementById('cancel-btn') as HTMLButtonElement | n
 const itemsList = document.getElementById('items-list') as HTMLUListElement | null;
 
 let isEditing = false;
+let localItemsCache: Item[] = []; // OPTIMIZATION: Cache items locally for event delegation
 
 if (!itemForm || !itemIdInput || !itemTitleInput || !itemDescInput || !submitBtn || !cancelBtn || !itemsList) {
     const errorMsg = "Required DOM elements missing from the page.";
@@ -137,21 +157,21 @@ if (!itemForm || !itemIdInput || !itemTitleInput || !itemDescInput || !submitBtn
 }
 
 async function fetchItems(): Promise<void> {
-    const startTime = performance.now(); // Start timer
+    const startTime = performance.now();
     try {
         const response = await fetch(API_URL);
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-        const items: Item[] = await response.json();
-        renderItems(items);
+        
+        localItemsCache = await response.json(); // Update cache
+        renderItems(localItemsCache);
         
         logger.emit({
             severityNumber: SeverityNumber.INFO,
             severityText: 'INFO',
             body: 'Successfully fetched items list',
-            attributes: { count: items.length }
+            attributes: { count: localItemsCache.length }
         });
         
-        // Record successful duration
         operationDurationHistogram.record(performance.now() - startTime, { 
             operation: 'fetchItems', 
             status: 'success' 
@@ -165,7 +185,6 @@ async function fetchItems(): Promise<void> {
             attributes: { error_type: errorInstance.name }
         });
         
-        // Record failed duration
         operationDurationHistogram.record(performance.now() - startTime, { 
             operation: 'fetchItems', 
             status: 'error' 
@@ -194,7 +213,7 @@ async function saveItem(e: Event): Promise<void> {
 
     const url = isEditing && id ? `${API_URL}/${id}` : API_URL;
     const method = isEditing && id ? 'PUT' : 'POST';
-    const startTime = performance.now(); // Start timer
+    const startTime = performance.now();
 
     await tracer.startActiveSpan('ui.submit_item', async (span) => {
         try {
@@ -211,12 +230,10 @@ async function saveItem(e: Event): Promise<void> {
             await fetchItems();
             span.setStatus({ code: SpanStatusCode.OK });
 
-            // METRICS: Increment counter if a NEW item was successfully created
             if (method === 'POST') {
                 itemCreationCounter.add(1, { status: 'success' });
             }
 
-            // METRICS: Record duration
             operationDurationHistogram.record(performance.now() - startTime, { 
                 operation: 'saveItem', 
                 method: method, 
@@ -234,7 +251,6 @@ async function saveItem(e: Event): Promise<void> {
             span.recordException(errorInstance);
             span.setStatus({ code: SpanStatusCode.ERROR, message: errorInstance.message });
             
-            // METRICS: Record failed duration
             operationDurationHistogram.record(performance.now() - startTime, { 
                 operation: 'saveItem', 
                 method: method, 
@@ -255,17 +271,17 @@ async function saveItem(e: Event): Promise<void> {
 
 async function deleteItem(id: number): Promise<void> {
     if (!window.confirm("Delete this item?")) return;
-    const startTime = performance.now(); // Start timer
+    const startTime = performance.now();
     
     await tracer.startActiveSpan('ui.delete_item', async (span) => {
         try {
             span.setAttribute('item.id', id);
             const response = await fetch(`${API_URL}/${id}`, { method: 'DELETE' });
             if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            
             await fetchItems();
             span.setStatus({ code: SpanStatusCode.OK });
 
-            // METRICS: Record duration
             operationDurationHistogram.record(performance.now() - startTime, { 
                 operation: 'deleteItem', 
                 status: 'success' 
@@ -282,7 +298,6 @@ async function deleteItem(id: number): Promise<void> {
             span.recordException(errorInstance);
             span.setStatus({ code: SpanStatusCode.ERROR, message: errorInstance.message });
             
-            // METRICS: Record failed duration
             operationDurationHistogram.record(performance.now() - startTime, { 
                 operation: 'deleteItem', 
                 status: 'error' 
@@ -302,11 +317,10 @@ async function deleteItem(id: number): Promise<void> {
 
 function renderItems(items: Item[]): void {
     if (!itemsList) return;
-    const startTime = performance.now(); // Start timer
+    const startTime = performance.now();
     
     tracer.startActiveSpan('ui.render_list', (span) => {
         span.setAttribute('items.count', items.length);
-        itemsList.textContent = '';
         const fragment = document.createDocumentFragment();
 
         items.forEach(item => {
@@ -323,28 +337,49 @@ function renderItems(items: Item[]): void {
             const actionsDiv = document.createElement('div');
             actionsDiv.className = 'actions';
 
+            // OPTIMIZATION: Added data attributes for event delegation and explicit type="button"
             const editBtn = document.createElement('button');
+            editBtn.type = 'button';
             editBtn.textContent = 'Edit';
-            editBtn.addEventListener('click', () => startEdit(item));
+            editBtn.dataset.action = 'edit';
+            editBtn.dataset.id = item.id.toString();
 
             const delBtn = document.createElement('button');
+            delBtn.type = 'button';
             delBtn.textContent = 'Delete';
             delBtn.className = 'delete-btn';
-            delBtn.addEventListener('click', () => deleteItem(item.id));
+            delBtn.dataset.action = 'delete';
+            delBtn.dataset.id = item.id.toString();
 
             actionsDiv.append(editBtn, delBtn);
             li.append(contentDiv, actionsDiv);
             fragment.appendChild(li);
         });
 
-        itemsList.appendChild(fragment);
+        // OPTIMIZATION: replaceChildren is significantly faster and safer than textContent = '' + appendChild
+        itemsList.replaceChildren(fragment);
         span.end();
         
-        // METRICS: Record render duration
         operationDurationHistogram.record(performance.now() - startTime, { 
             operation: 'renderItems' 
         });
     });
+}
+
+// OPTIMIZATION: Event Delegation for list items
+function handleListClick(e: MouseEvent): void {
+    const target = e.target as HTMLElement;
+    if (target.tagName !== 'BUTTON') return;
+
+    const action = target.dataset.action;
+    const itemId = parseInt(target.dataset.id || '0', 10);
+
+    if (action === 'edit') {
+        const itemToEdit = localItemsCache.find(item => item.id === itemId);
+        if (itemToEdit) startEdit(itemToEdit);
+    } else if (action === 'delete') {
+        deleteItem(itemId);
+    }
 }
 
 function startEdit(item: Item): void {
@@ -373,7 +408,10 @@ function resetForm(): void {
     cancelBtn.hidden = true;
 }
 
+// Global Event Listeners
 itemForm.addEventListener('submit', saveItem);
 cancelBtn.addEventListener('click', resetForm);
+itemsList?.addEventListener('click', handleListClick);
 
+// Initial items fetch invocation on script load
 fetchItems();

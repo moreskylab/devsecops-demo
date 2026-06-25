@@ -13,10 +13,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project --no-dev
 
 # Copy actual code and install the project itself
-COPY main.py ./
+COPY . .
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
-
 
 # Stage 2: Production runtime image
 FROM python:3.12-slim-bookworm
@@ -52,4 +51,3 @@ ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 
 # Use 'exec' to replace the shell process with gunicorn so it receives SIGTERM directly
 CMD ["sh", "-c", "exec gunicorn main:app --workers=\"${WEB_CONCURRENCY:-4}\" --worker-class=uvicorn.workers.UvicornWorker --bind=0.0.0.0:\"${PORT:-8000}\""]
-# CMD ["sh", "-c", "exec uvicorn main:app --workers=\"${WEB_CONCURRENCY:-4}\" --host=0.0.0.0 --port=\"${PORT:-8000}\""]
