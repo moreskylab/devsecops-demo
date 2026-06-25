@@ -13,12 +13,17 @@
     "vite": "^8.0.12"
   },
   "dependencies": {
+    "@opentelemetry/api-logs": "^0.219.0",
+    "@opentelemetry/exporter-logs-otlp-http": "^0.219.0",
+    "@opentelemetry/exporter-metrics-otlp-http": "^0.219.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.219.0",
     "@opentelemetry/instrumentation": "^0.219.0",
     "@opentelemetry/instrumentation-fetch": "^0.219.0",
     "@opentelemetry/instrumentation-user-interaction": "^0.63.0",
     "@opentelemetry/instrumentation-xml-http-request": "^0.219.0",
     "@opentelemetry/resources": "^2.8.0",
+    "@opentelemetry/sdk-logs": "^0.219.0",
+    "@opentelemetry/sdk-metrics": "^2.8.0",
     "@opentelemetry/sdk-trace-web": "^2.8.0",
     "@opentelemetry/semantic-conventions": "^1.41.1"
   }

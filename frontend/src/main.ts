@@ -8,29 +8,23 @@ import { registerInstrumentations } from '@opentelemetry/instrumentation';
 import { FetchInstrumentation } from '@opentelemetry/instrumentation-fetch';
 import { UserInteractionInstrumentation } from '@opentelemetry/instrumentation-user-interaction';
 import { W3CTraceContextPropagator } from '@opentelemetry/core';
-import { trace, SpanStatusCode } from '@opentelemetry/api';
+import { trace, SpanStatusCode, metrics } from '@opentelemetry/api';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
-// import { XMLHttpRequestInstrumentation } from '@opentelemetry/instrumentation-xml-http-request';
 
-// Ensure Vite/TypeScript recognizes the environment variables types
-// const COMPILED_URL = (import.meta as any).env?.VITE_API_URL || '';
+// --- NEW LOGGING IMPORTS ---
+import { LoggerProvider, BatchLogRecordProcessor } from '@opentelemetry/sdk-logs';
+import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-http';
+import { logs, SeverityNumber } from '@opentelemetry/api-logs';
 
-// 1. Detect if the fallback placeholder string is literally active
-// const isPlaceholderActive = !COMPILED_URL || COMPILED_URL.includes('__RUNTIME_');
+// --- NEW METRICS IMPORTS ---
+import { MeterProvider, PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
 
-// 2. Resolve the domain safely based on the placeholder state
-// const BASE_DOMAIN = !isPlaceholderActive 
-//     ? COMPILED_URL 
-//     : (window.location.hostname === 'localhost' 
-//         ? 'http://localhost:8080' // Your local backend dev server port
-//         : window.location.origin); 
-
-// const BASE_DOMAIN = 'http://localhost:8080'
-// const API_URL = `${BASE_DOMAIN}/api`;
-// const finalOtlpUrl = `${BASE_DOMAIN}/v1/traces`;
 const API_URL = '/items';
 const finalOtlpUrl = '/v1/traces';
+const finalLogsUrl = '/v1/logs'; // Added logs endpoint
+const finalMetricsUrl = '/v1/metrics'; // Added metrics endpoint
 
 
 // --- TELEMETRY SYSTEM REGISTRATION ---
@@ -54,6 +48,50 @@ provider.register({
     propagator: new W3CTraceContextPropagator(),
 });
 
+
+// --- NEW LOGGING SETUP ---
+const logExporter = new OTLPLogExporter({
+    url: finalLogsUrl,
+});
+
+// Pass the processor array via the 'processors' configuration key
+const loggerProvider = new LoggerProvider({
+    resource: telemetryResource,
+    processors: [new BatchLogRecordProcessor(logExporter)] // Fixed parameter name
+});
+
+// Register the logger provider globally
+logs.setGlobalLoggerProvider(loggerProvider);
+
+// Initialize the logger instance
+const logger = logs.getLogger('frontend-logger', '1.0.0');
+
+
+// --- METRICS SETUP ---
+const metricExporter = new OTLPMetricExporter({ url: finalMetricsUrl });
+const meterProvider = new MeterProvider({
+    resource: telemetryResource,
+    readers: [
+        new PeriodicExportingMetricReader({
+            exporter: metricExporter,
+            exportIntervalMillis: 60000, 
+        }),
+    ],
+});
+
+metrics.setGlobalMeterProvider(meterProvider);
+const meter = metrics.getMeter('frontend-main-meter', '1.0.0');
+
+// --- FIXED: Added export keywords so TypeScript knows these instruments are used ---
+export const itemCreationCounter = meter.createCounter('items.created.count', {
+    description: 'Tracks the total number of items created',
+});
+
+export const operationDurationHistogram = meter.createHistogram('ui.operation.duration', {
+    description: 'Tracks durations of frontend operations',
+    unit: 'ms',
+});
+
 // ==========================================
 // APPLICATION LOGIC
 // ==========================================
@@ -75,7 +113,7 @@ registerInstrumentations({
     ],
 });
 
-const tracer = trace.getTracer('frontend-manual');
+const tracer = trace.getTracer('frontend-tracer', '1.0.0');
 
 const itemForm = document.getElementById('item-form') as HTMLFormElement | null;
 const itemIdInput = document.getElementById('item-id') as HTMLInputElement | null;
@@ -88,7 +126,15 @@ const itemsList = document.getElementById('items-list') as HTMLUListElement | nu
 let isEditing = false;
 
 if (!itemForm || !itemIdInput || !itemTitleInput || !itemDescInput || !submitBtn || !cancelBtn || !itemsList) {
-    throw new Error("Required DOM elements missing from the page.");
+    const errorMsg = "Required DOM elements missing from the page.";
+    // Emit fatal configuration error log
+    logger.emit({
+        severityNumber: SeverityNumber.FATAL,
+        severityText: 'FATAL',
+        body: errorMsg,
+        attributes: { component: 'dom_initialization' }
+    });
+    throw new Error(errorMsg);
 }
 
 async function fetchItems(): Promise<void> {
@@ -97,8 +143,21 @@ async function fetchItems(): Promise<void> {
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const items: Item[] = await response.json();
         renderItems(items);
+        
+        logger.emit({
+            severityNumber: SeverityNumber.INFO,
+            severityText: 'INFO',
+            body: 'Successfully fetched items list',
+            attributes: { count: items.length }
+        });
     } catch (err) {
-        console.error("Failed fetching records:", err);
+        const errorInstance = err as Error;
+        logger.emit({
+            severityNumber: SeverityNumber.ERROR,
+            severityText: 'ERROR',
+            body: `Failed fetching records: ${errorInstance.message}`,
+            attributes: { error_type: errorInstance.name }
+        });
     }
 }
 
@@ -112,7 +171,14 @@ async function saveItem(e: Event): Promise<void> {
         description: itemDescInput.value.trim() || null
     };
 
-    if (!payload.title) return;
+    if (!payload.title) {
+        logger.emit({
+            severityNumber: SeverityNumber.WARN,
+            severityText: 'WARN',
+            body: 'Item submission rejected: title empty',
+        });
+        return;
+    }
 
     const url = isEditing && id ? `${API_URL}/${id}` : API_URL;
     const method = isEditing && id ? 'PUT' : 'POST';
@@ -131,10 +197,24 @@ async function saveItem(e: Event): Promise<void> {
             resetForm();
             await fetchItems();
             span.setStatus({ code: SpanStatusCode.OK });
+
+            logger.emit({
+                severityNumber: SeverityNumber.INFO,
+                severityText: 'INFO',
+                body: `Successfully saved item payload`,
+                attributes: { action: method, item_id: id || 'new' }
+            });
         } catch (err) {
-            span.recordException(err as Error);
-            span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
-            console.error("Failed saving payload:", err);
+            const errorInstance = err as Error;
+            span.recordException(errorInstance);
+            span.setStatus({ code: SpanStatusCode.ERROR, message: errorInstance.message });
+            
+            logger.emit({
+                severityNumber: SeverityNumber.ERROR,
+                severityText: 'ERROR',
+                body: `Failed saving payload: ${errorInstance.message}`,
+                attributes: { action: method, item_id: id || 'new' }
+            });
         } finally {
             span.end();
         }
@@ -151,10 +231,24 @@ async function deleteItem(id: number): Promise<void> {
             if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
             await fetchItems();
             span.setStatus({ code: SpanStatusCode.OK });
+
+            logger.emit({
+                severityNumber: SeverityNumber.INFO,
+                severityText: 'INFO',
+                body: `Successfully dropped record`,
+                attributes: { item_id: id }
+            });
         } catch (err) {
-            span.recordException(err as Error);
-            span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
-            console.error("Failed dropping record:", err);
+            const errorInstance = err as Error;
+            span.recordException(errorInstance);
+            span.setStatus({ code: SpanStatusCode.ERROR, message: errorInstance.message });
+            
+            logger.emit({
+                severityNumber: SeverityNumber.ERROR,
+                severityText: 'ERROR',
+                body: `Failed dropping record: ${errorInstance.message}`,
+                attributes: { item_id: id }
+            });
         } finally {
             span.end();
         }
@@ -210,6 +304,13 @@ function startEdit(item: Item): void {
     itemDescInput.value = item.description || '';
     submitBtn.textContent = 'Update Item';
     cancelBtn.hidden = false;
+
+    logger.emit({
+        severityNumber: SeverityNumber.DEBUG,
+        severityText: 'DEBUG',
+        body: 'UI switched to edit mode',
+        attributes: { item_id: item.id }
+    });
 }
 
 function resetForm(): void {
@@ -221,7 +322,7 @@ function resetForm(): void {
     cancelBtn.hidden = true;
 }
 
-// FIXED: Completed the broken syntax hooks safely 
+// Fixed listeners
 itemForm.addEventListener('submit', saveItem);
 cancelBtn.addEventListener('click', resetForm);
 
