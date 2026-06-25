@@ -435,24 +435,59 @@ spec:
 # HTTPROUTE: Application Traffic Routing
 # ==========================================
 apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: ngrok
+spec:
+  controllerName: ngrok.com/gateway-controller
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ngrok-gateway
+  namespace: observability
+spec:
+  gatewayClassName: ngrok
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      # Change this to your assigned static domain from the ngrok dashboard
+      hostname: "upward-snipping-certainty.ngrok-free.dev" 
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: app-traffic-route
   namespace: observability
 spec:
   parentRefs:
-    - name: app-gateway
+    - name: ngrok-gateway
+  hostnames:
+    - "upward-snipping-certainty.ngrok-free.dev"
   rules:
-    # 1. Route OTel traces from the client directly to Grafana Alloy
+    # -------------------------------------------------------------
+    # ROUTE 1: Trace collection path (Evaluated first by length match)
+    # -------------------------------------------------------------
     - matches:
         - path:
             type: PathPrefix
             value: /v1/traces
+          method: POST
+        - path:
+            type: PathPrefix
+            value: /v1/traces
+          method: OPTIONS # Allows browser preflight requests
       backendRefs:
-        - name: alloy # Ensure this matches your Alloy service metadata name
+        - name: alloy 
           port: 4318
 
-    # 2. Route application database actions directly to the Backend API
+    # -------------------------------------------------------------
+    # ROUTE 2: Core application database actions
+    # -------------------------------------------------------------
     - matches:
         - path:
             type: PathPrefix
@@ -461,7 +496,9 @@ spec:
         - name: backend
           port: 8000
 
-    # 3. Fallback catch-all to route everything else to the Frontend UI assets
+    # -------------------------------------------------------------
+    # ROUTE 3: Fallback catch-all for web app frontend assets
+    # -------------------------------------------------------------
     - matches:
         - path:
             type: PathPrefix
