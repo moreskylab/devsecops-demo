@@ -165,6 +165,12 @@ spec:
       containers:
         - name: lgtm
           image: grafana/otel-lgtm:latest
+          env:
+            - name: GF_SERVER_ROOT_URL
+              # Fixed: Added your exact static domain and the trailing slash
+              value: "https://upward-snipping-certainty.ngrok-free.dev/grafana/"
+            - name: GF_SERVER_SERVE_FROM_SUB_PATH
+              value: "true"
           ports:
             - containerPort: 3000
             - containerPort: 4317
@@ -476,14 +482,8 @@ spec:
         - path:
             type: PathPrefix
             value: /grafana
-      filters:
-        - type: URLRewrite
-          urlRewrite:
-            path:
-              type: ReplacePrefixMatch
-              replacePrefixMatch: /
       backendRefs:
-        - name: lgtm # Replace with your actual Kubernetes Service name
+        - name: lgtm
           port: 3000
 
     # -------------------------------------------------------------
