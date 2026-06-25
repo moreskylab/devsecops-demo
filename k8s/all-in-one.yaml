@@ -480,11 +480,15 @@ spec:
     # -------------------------------------------------------------
     - matches:
         - path:
-            type: PathPrefix
+            type: Exact
             value: /grafana
+        - path:
+            type: PathPrefix
+            value: /grafana/
       backendRefs:
         - name: lgtm
           port: 3000
+
 
     # -------------------------------------------------------------
     # ROUTE 1: Trace collection path (Evaluated first by length match)
