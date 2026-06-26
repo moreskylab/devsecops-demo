@@ -6,7 +6,7 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 
 # Copy ONLY package files first to leverage Docker layer caching
-COPY package*.json ./
+COPY package-lock.json package.json ./
 
 # Use 'ci' for deterministic, faster, lockfile-based installations
 RUN npm ci

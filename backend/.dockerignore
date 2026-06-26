@@ -46,6 +46,8 @@ Jenkinsfile
 
 README.md
 
+app.db
+
 # OS files
 .DS_Store
 Thumbs.db
