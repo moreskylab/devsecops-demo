@@ -1,53 +1,54 @@
-# Stage 1: Build virtual environment
+# ==========================================
+# STAGE 1: Build virtual environment
+# ==========================================
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
+# FROM ghcr.io/astral-sh/uv:python3.12-trixie-slim AS builder
+
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never \
     UV_PROJECT_ENVIRONMENT=/app/.venv
+
 WORKDIR /app
 
+# Copy dependency mappings 
 COPY pyproject.toml uv.lock ./
 
-# Install dependencies first to maximize layer caching
+# Install dependencies into the workspace (omitting development environments)
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project --no-dev
 
-# Copy actual code and install the project itself
-COPY . .
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
+# Mount files and execute final application alignment
+COPY main.py .
+# RUN --mount=type=cache,target=/root/.cache/uv \
+#     uv sync --frozen --no-dev
 
-# Stage 2: Production runtime image
-FROM python:3.12-slim-bookworm
+
+# ==========================================
+# STAGE 2: Distroless production runtime
+# ==========================================
+FROM gcr.io/distroless/python3-debian12
+# FROM gcr.io/distroless/python3-debian13
 WORKDIR /app
 
-# Cloud-native environment variables
+# Point PATH to the venv bin folder so Python can find uvicorn modules
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    WEB_CONCURRENCY=4 \
-    PORT=8000
+    PYTHONDONTWRITEBYTECODE=1
 
-# Install dumb-init for proper signal handling (PID 1) and apply security updates
-RUN apt-get update && apt-get upgrade -y && \
-    apt-get install -y --no-install-recommends dumb-init && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+# Copy the complete venv + app from the builder stage
+COPY --from=builder --chown=nonroot:nonroot /app /app
 
-# Create a system non-root user for security compliance
-RUN groupadd -g 10001 appuser && \
-    useradd -u 10001 -g appuser -m -s /sbin/nologin appuser
+# Enforce secure context using the built-in distroless user identifier
+USER nonroot
 
-# Copy virtual environment and code from builder stage
-COPY --from=builder --chown=appuser:appuser /app /app
+# Expose target application port
+EXPOSE 8000
 
-# Enforce non-root execution
-USER 10001
+# Call the uvicorn executable inside your .venv directly using JSON array format.
+# Distroless has no shell, so arguments must be separate strings.
+ENTRYPOINT ["/app/.venv/bin/uvicorn"]
 
-EXPOSE ${PORT}
-
-# Use dumb-init as the entrypoint to handle PID 1 responsibilities
-ENTRYPOINT ["/usr/bin/dumb-init", "--"]
-
-# Use 'exec' to replace the shell process with gunicorn so it receives SIGTERM directly
-CMD ["sh", "-c", "exec gunicorn main:app --workers=\"${WEB_CONCURRENCY:-4}\" --worker-class=uvicorn.workers.UvicornWorker --bind=0.0.0.0:\"${PORT:-8000}\""]
+# Configure uvicorn arguments directly via JSON array formatting
+# CMD ["main:app", "--host=0.0.0.0", "--port=8000", "--workers=4"]
+CMD ["fastapi", "run", "main.py", "--port", "8000", "--workers", "4"]

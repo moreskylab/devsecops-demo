@@ -1,0 +1,12 @@
+fastapi[standard]>=0.138.1
+opentelemetry-api>=1.42.1
+opentelemetry-exporter-otlp>=1.42.1
+opentelemetry-instrumentation-fastapi>=0.63b1
+opentelemetry-instrumentation-logging>=0.63b1
+opentelemetry-instrumentation-sqlalchemy>=0.63b1
+opentelemetry-sdk>=1.42.1
+psycopg2-binary>=2.9.12
+pydantic>=2.13.4
+pyroscope-io>=1.0.12
+sqlmodel>=0.0.38
+uvicorn>=0.49.0
