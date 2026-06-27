@@ -1,0 +1,589 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+---
+# ==========================================
+# STORAGE CONFIGURATION (Persistent Storage)
+# ==========================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: observability
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: alloy-data-pvc
+  namespace: observability
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+---
+# ==========================================
+# APPLICATION CONFIGS & SECRETS
+# ==========================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: backend-secret
+  namespace: observability
+type: Opaque
+stringData:
+  # OPTIMIZATION: Consolidated all sensitive DB credentials here
+  POSTGRES_USER: "postgres"
+  POSTGRES_PASSWORD: "postgres"
+  DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/postgres"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-env-config
+  namespace: observability
+data:
+  ALLOWED_ORIGIN: "https://upward-snipping-certainty.ngrok-free.dev"
+  WEB_CONCURRENCY: "4"
+  PORT: "8000"
+  ENABLE_OBSERVABILITY: "true"
+  PYROSCOPE_SERVER: "http://alloy:4040?format=pyroscope"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-env-config
+  namespace: observability
+data:
+  VITE_ENABLE_TRACKING: "true"
+  VITE_APP_VERSION: "1.0.0"
+  VITE_API_BASE_URL: "https://upward-snipping-certainty.ngrok-free.dev"
+---
+# ==========================================
+# CONFIGMAPS (Optimized OpenTelemetry Pipeline)
+# ==========================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy-config
+  namespace: observability
+data:
+  config.alloy: |
+    // 1. INGESTION (Receivers)
+    otelcol.receiver.otlp "default" {
+      grpc { endpoint = "0.0.0.0:4317" }
+      http { 
+        endpoint = "0.0.0.0:4318" 
+        
+        // OPTIMIZATION: Critical for browser-based frontend telemetry
+        cors {
+          allowed_origins = ["*"]
+          allowed_headers = ["*"]
+        }
+      }
+
+      output {
+        metrics = [otelcol.exporter.prometheus.to_mimir.input]
+        traces  = [otelcol.exporter.otlp.to_tempo.input]
+        logs    = [otelcol.exporter.otlp.to_loki.input]
+      }
+    }
+
+    pyroscope.receive_http "default" {
+      http {
+        listen_address = "0.0.0.0"
+        listen_port    = 4040
+      }
+      forward_to = [pyroscope.write.to_pyroscope.receiver]
+    }
+
+    // 2. EXPORTERS & FORWARDING
+    otelcol.exporter.prometheus "to_mimir" {
+      forward_to = [prometheus.remote_write.mimir.receiver]
+    }
+
+    prometheus.remote_write "mimir" {
+      endpoint { 
+        url = "http://lgtm:9090/api/v1/push" 
+      }
+    }
+
+    otelcol.exporter.otlp "to_tempo" {
+      client {
+        endpoint = "lgtm:4317"
+        tls { insecure = true }
+      }
+    }
+
+    otelcol.exporter.otlp "to_loki" {
+      client {
+        endpoint = "lgtm:4317"
+        tls { insecure = true }
+      }
+    }
+
+    pyroscope.write "to_pyroscope" {
+      endpoint { 
+        url = "http://lgtm:4040" 
+      }
+    }
+---
+# ==========================================
+# POSTGRES COMPONENT
+# ==========================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: observability
+spec:
+  serviceName: "postgres"
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: docker.io/library/postgres:alpine
+          env:
+            - name: POSTGRES_DB
+              value: "postgres"
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secret
+                  key: POSTGRES_PASSWORD
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: postgres-storage
+              mountPath: /var/lib/postgresql
+      volumes:
+        - name: postgres-storage
+          persistentVolumeClaim:
+            claimName: postgres-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: observability
+spec:
+  ports:
+    - port: 5432
+      targetPort: 5432
+  selector:
+    app: postgres
+---
+# ==========================================
+# GRAFANA LGTM STACK COMPONENT
+# ==========================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lgtm
+  namespace: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lgtm
+  template:
+    metadata:
+      labels:
+        app: lgtm
+    spec:
+      containers:
+        - name: lgtm
+          image: grafana/otel-lgtm:latest
+          resources: # OPTIMIZATION: Prevents the DB/App from being starved
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+          env:
+            - name: GF_SERVER_ROOT_URL
+              value: "https://upward-snipping-certainty.ngrok-free.dev/grafana/"
+            - name: GF_SERVER_SERVE_FROM_SUB_PATH
+              value: "true"
+          ports:
+            - containerPort: 3000
+            - containerPort: 4317
+            - containerPort: 9090
+            - containerPort: 4040
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lgtm
+  namespace: observability
+spec:
+  ports:
+    - name: http-grafana
+      port: 3000
+      targetPort: 3000
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: prometheus
+      port: 9090
+      targetPort: 9090
+    - name: pyroscope
+      port: 4040
+      targetPort: 4040
+  selector:
+    app: lgtm
+---
+# ==========================================
+# GRAFANA ALLOY COLLECTOR COMPONENT
+# ==========================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alloy
+  namespace: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alloy
+  template:
+    metadata:
+      labels:
+        app: alloy
+    spec:
+      containers:
+        - name: alloy
+          image: grafana/alloy:latest
+          args:
+            - run
+            - --stability.level=public-preview
+            - /etc/alloy/config.alloy
+          resources: # OPTIMIZATION: Bounded collector resources
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          ports:
+            - containerPort: 4317
+            - containerPort: 4318
+            - containerPort: 4040
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/alloy
+            - name: alloy-storage
+              mountPath: /var/lib/alloy/data
+      volumes:
+        - name: config-volume
+          configMap:
+            name: alloy-config
+        - name: alloy-storage
+          persistentVolumeClaim:
+            claimName: alloy-data-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alloy
+  namespace: observability
+spec:
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+    - name: profiling
+      port: 4040
+      targetPort: 4040
+  selector:
+    app: alloy
+---
+# ==========================================
+# APPLICATION: BACKEND WORKLOAD
+# ==========================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: observability
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      initContainers:
+        - name: wait-for-postgres
+          image: docker.io/library/postgres:alpine
+          command: ['sh', '-c', 'until pg_isready -h postgres -p 5432 -U postgres; do echo "Waiting for PostgreSQL..."; sleep 2; done;']
+      containers:
+        - name: backend
+          image: moreskylab/backend:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://alloy:4317"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secret
+                  key: DATABASE_URL
+          envFrom:
+            - configMapRef:
+                name: backend-env-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: observability
+spec:
+  ports:
+    - port: 8000
+      targetPort: 8000
+      protocol: TCP
+      name: http
+  selector:
+    app: backend
+---
+# ==========================================
+# APPLICATION: FRONTEND WORKLOAD
+# ==========================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: observability
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: moreskylab/frontend:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          envFrom:
+            - configMapRef:
+                name: frontend-env-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: observability
+spec:
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http
+  selector:
+    app: frontend
+---
+# ==========================================
+# HTTPROUTE: Application Traffic Routing
+# ==========================================
+# ==========================================
+# ENVOYPROXY: Configure Service as ClusterIP
+# ==========================================
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: envoy-clusterip-config
+  namespace: observability
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        type: ClusterIP
+        # FIXED: Hardcode the service name so Pangolin can reliably route to it
+        name: envoy-internal-proxy
+---
+# ==========================================
+# GATEWAYCLASS: Envoy Gateway
+# ==========================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: envoy
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: envoy-clusterip-config
+    namespace: observability
+---
+# ==========================================
+# GATEWAY: Envoy Ingress Gateway (HTTP)
+# ==========================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: envoy-gateway
+  namespace: observability
+spec:
+  gatewayClassName: envoy
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      hostname: "frontend.altgr.in"
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+# ==========================================
+# HTTPROUTE: Application Traffic Routing
+# ==========================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: app-traffic-route
+  namespace: observability
+spec:
+  parentRefs:
+    - name: envoy-gateway
+  hostnames:
+    - "frontend.altgr.in"
+  rules:
+    # -------------------------------------------------------------
+    # ROUTE: Grafana / LGTM Dashboard Access
+    # -------------------------------------------------------------
+    - matches:
+        - path:
+            type: Exact
+            value: /grafana
+        - path:
+            type: PathPrefix
+            value: /grafana/
+      backendRefs:
+        - name: lgtm
+          port: 3000
+
+    # -------------------------------------------------------------
+    # ROUTE 1: Trace, Metric, and Log collection paths
+    # -------------------------------------------------------------
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/traces
+        - path:
+            type: PathPrefix
+            value: /v1/logs
+        - path:
+            type: PathPrefix
+            value: /v1/metrics
+      backendRefs:
+        - name: alloy
+          port: 4318
+
+    # -------------------------------------------------------------
+    # ROUTE 2: Core application database actions
+    # -------------------------------------------------------------
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /items
+      backendRefs:
+        - name: backend
+          port: 8000
+
+    # -------------------------------------------------------------
+    # ROUTE 3: Fallback catch-all for web app frontend assets
+    # -------------------------------------------------------------
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: frontend
+          port: 8080
