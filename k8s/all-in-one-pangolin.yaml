@@ -512,6 +512,13 @@ metadata:
   namespace: observability
 spec:
   gatewayClassName: envoy
+  # ◄── Add this explicit infrastructure block to attach your configuration
+  infrastructure:
+    parametersRef:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: envoy-clusterip-config
+      namespace: observability
   listeners:
     - name: http
       protocol: HTTP
@@ -520,6 +527,7 @@ spec:
       allowedRoutes:
         namespaces:
           from: Same
+
 ---
 # ==========================================
 # HTTPROUTE: Application Traffic Routing
