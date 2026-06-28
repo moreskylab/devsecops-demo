@@ -223,11 +223,11 @@ spec:
             limits:
               memory: "2Gi"
               cpu: "1000m"
-          env:
-            - name: GF_SERVER_ROOT_URL
-              value: "https://upward-snipping-certainty.ngrok-free.dev/grafana/"
-            - name: GF_SERVER_SERVE_FROM_SUB_PATH
-              value: "true"
+          # env:
+          #   - name: GF_SERVER_ROOT_URL
+          #     value: "https://upward-snipping-certainty.ngrok-free.dev/grafana/"
+          #   - name: GF_SERVER_SERVE_FROM_SUB_PATH
+          #     value: "true"
           ports:
             - containerPort: 3000
             - containerPort: 4317
