@@ -9,12 +9,15 @@ pipeline {
   stages {
     stage('semgrep-scan') {
       steps {
-        sh '''docker pull semgrep/semgrep && \
-            docker run \
-            -e SEMGREP_APP_TOKEN=$SEMGREP_APP_TOKEN \
-            -e SEMGREP_REPO_NAME=$SEMGREP_REPO_NAME \
-            -v "$(pwd):$(pwd)" --workdir $(pwd) \
-            semgrep/semgrep semgrep ci '''
+        sh '''
+          docker pull semgrep/semgrep:latest
+          docker run --rm \
+            -e SEMGREP_APP_TOKEN="${SEMGREP_APP_TOKEN}" \
+            -e SEMGREP_REPO_NAME="${SEMGREP_REPO_NAME}" \
+            -v "${WORKSPACE}:${WORKSPACE}" \
+            --workdir "${WORKSPACE}" \
+            semgrep/semgrep:latest semgrep ci
+        '''
       }
     }
   }
